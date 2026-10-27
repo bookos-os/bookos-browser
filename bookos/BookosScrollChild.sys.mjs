@@ -20,6 +20,13 @@ const ARRIBA = 8;
 // No se oculta hasta haber bajado más que la franja (58px): al irse, la
 // página se compensa subiendo ese alto y no debe quedar dentro de ARRIBA.
 const MINIMO_PARA_OCULTAR = 80;
+// Alto de la franja (--alto-barra en bookos.css: control de 38 + 20). Al
+// ocultarse, la ventana crece eso y el scroll máximo baja otro tanto; si por
+// debajo queda menos, el navegador recorta la posición, el recorte se lee
+// como un scroll hacia arriba (o la compensación deja la página en ARRIBA) y
+// la barra vuelve a salir. En páginas solo un poco más altas que la ventana
+// (entre 90 y 120px más, medido) entraba y salía cada ~0,3 s al deslizar.
+const ALTO_BARRA = 58;
 
 export class BookosScrollChild extends JSWindowActorChild {
   #ultimaY = 0;
@@ -39,6 +46,14 @@ export class BookosScrollChild extends JSWindowActorChild {
 
   #posicion() {
     return this.#objetivo ? this.#objetivo.scrollTop : this.contentWindow.scrollY;
+  }
+
+  // Lo que aún se puede bajar desde la posición actual.
+  #restante() {
+    const o = this.#objetivo;
+    if (o) return o.scrollHeight - o.clientHeight - o.scrollTop;
+    const win = this.contentWindow;
+    return win.scrollMaxY - win.scrollY;
   }
 
   handleEvent(ev) {
@@ -114,7 +129,7 @@ export class BookosScrollChild extends JSWindowActorChild {
     }
     // Se acumula en un sentido; un cambio de sentido empieza de cero.
     this.#acumulado = Math.sign(delta) === Math.sign(this.#acumulado) ? this.#acumulado + delta : delta;
-    if (this.#acumulado > UMBRAL && y > MINIMO_PARA_OCULTAR) this.#avisar("oculta", true);
+    if (this.#acumulado > UMBRAL && y > MINIMO_PARA_OCULTAR && this.#restante() >= ALTO_BARRA) this.#avisar("oculta", true);
     else if (this.#acumulado < -UMBRAL) this.#avisar("visible", true);
   }
 

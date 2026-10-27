@@ -36,6 +36,20 @@
           )
       );
     if (fuentes.length) registro.registerSources(fuentes);
+    if (ES) {
+      // El paquete de idioma aún no trae las etiquetas del menú abreviado.
+      // Un recurso separado completa sus mensajes sin sustituir el archivo nativo.
+      for (const id of ["app", ...Langpack.activeLangpackIds]) {
+        const nombre = `bookos-menu-${id}`;
+        if (registro.hasSource(nombre)) continue;
+        registro.registerSources([new L10nFileSource(
+          nombre, id, Services.locale.availableLocales, "resource://bookos/l10n/es/",
+          { addResourceOptions: { allowOverrides: true } }
+        )]);
+      }
+      gBrowser.translateTabContextMenu();
+      document.l10n.addResourceIds(["bookos-tab-context.ftl"]);
+    }
   }
 
   // ── Disposición ────────────────────────────────────────────────────────────
@@ -170,6 +184,21 @@
   // derecho del botón) se salía de la ventana por la izquierda.
   document.getElementById("appMenu-popup").setAttribute("position", "bottomleft topleft");
 
+  // El menú contextual nativo sigue al puntero y tapa la pestaña. Mantener
+  // triggerEvent permite que Firefox actúe sobre la pulsada, aunque no sea
+  // la seleccionada, y conserve la selección múltiple y los submenús.
+  gBrowser.tabContainer.addEventListener("contextmenu", ev => {
+    if (ev.defaultPrevented) return;
+    const tab = ev.target.closest("tab");
+    if (!tab) return;
+    ev.preventDefault();
+    document.getElementById("tabContextMenu").openPopup(tab, {
+      position: "after_start",
+      isContextMenu: true,
+      triggerEvent: ev,
+    });
+  });
+
   // ── Fila del título: enfoque y extensiones junto a los botones de ventana.
   // Así la barra de navegación queda solo con lo que se usa al navegar y se
   // puede centrar. Son nodos fijos de Firefox (no widgets), así que se mueven
@@ -218,7 +247,7 @@
 
   // ── Vista de pestañas (Tab overview) ──────────────────────────────────────
   // Una capa sobre la web con una tarjeta por pestaña: miniatura, título y
-  // cerrar. Clic o Intro va a esa pestaña; Esc o clic fuera, cierra.
+  // descargar y cerrar. Clic o Intro va a esa pestaña; Esc o clic fuera, cierra.
   const HTML = "http://www.w3.org/1999/xhtml";
   const ANCHO_MINIATURA = 260;
   let vista = null;
@@ -229,8 +258,10 @@
     vista = null;
     v.toggleAttribute("abierta", false);
     raiz.removeAttribute("bookos-vista");
-    // Se retira al acabar el fundido de salida (220ms en bookos.css).
-    setTimeout(() => v.remove(), 220);
+    // El zoom dura más que el fundido; retirarla a los 220ms cortaba los
+    // últimos 60ms. Con movimiento reducido no se espera ningún temporizador.
+    Promise.allSettled(v.getAnimations({ subtree: true }).map(a => a.finished))
+      .then(() => v.remove());
     window.removeEventListener("keydown", teclaVista, true);
   };
   function teclaVista(ev) {
@@ -242,7 +273,7 @@
 
   // La miniatura sale de la propia página (drawSnapshot, lo mismo que usan
   // las capturas de Firefox). Una pestaña descargada no tiene página que
-  // pintar: se queda con su favicon en grande.
+  // pintar: conserva su favicon, atenuado por el estado descargado.
   async function miniatura(tab, lienzo) {
     const wg = tab.linkedBrowser.browsingContext?.currentWindowGlobal;
     if (!wg || !tab.linkedPanel) return false;
@@ -269,24 +300,53 @@
     const rejilla = vista.querySelector(".bookos-rejilla");
     rejilla.replaceChildren();
     const tarjetas = new Map();
+    const miniaturas = [];
     for (const tab of gBrowser.visibleTabs) {
-      const tarjeta = document.createElementNS(HTML, "button");
+      const tarjeta = document.createElementNS(HTML, "div");
       tarjeta.className = "bookos-tarjeta";
       tarjeta.toggleAttribute("seleccionada", tab.selected);
-      tarjeta.title = tab.label;
+      const seleccionar = document.createElementNS(HTML, "button");
+      seleccionar.className = "bookos-seleccionar";
+      seleccionar.title = tab.label;
       const marco = document.createElementNS(HTML, "div");
       marco.className = "bookos-miniatura";
       const lienzo = document.createElementNS(HTML, "canvas");
       const icono = document.createElementNS(HTML, "img");
       icono.src = tab.getAttribute("image") || "chrome://global/skin/icons/defaultFavicon.svg";
       marco.append(icono, lienzo);
-      miniatura(tab, lienzo).then(ok => marco.toggleAttribute("con-miniatura", ok));
+      miniaturas.push({ tab, lienzo, marco });
       const pie = document.createElementNS(HTML, "div");
       pie.className = "bookos-pie";
       pie.textContent = tab.label;
-      const cerrar = document.createElementNS(HTML, "span");
+      seleccionar.append(marco, pie);
+      const descargar = document.createElementNS(HTML, "button");
+      descargar.className = "bookos-descargar";
+      const actualizar = () => {
+        const descargada = !tab.linkedPanel;
+        tarjeta.toggleAttribute("descargada", descargada);
+        descargar.title = descargada
+          ? t("Pestaña descargada", "Unloaded tab")
+          : t("Descargar pestaña para liberar memoria", "Unload tab to free memory");
+        descargar.setAttribute("aria-label", descargar.title);
+        seleccionar.setAttribute("aria-label", `${tab.label} · ${descargada
+          ? t("Descargada", "Unloaded") : t("Abierta", "Open")}`);
+        descargar.disabled = descargada || !tab.linkedBrowser.isRemoteBrowser;
+      };
+      actualizar();
+      descargar.addEventListener("click", async () => {
+        descargar.disabled = true;
+        // La operación de Firefox guarda el estado y consulta beforeunload;
+        // descartar el navegador directamente perdería esa protección.
+        await gBrowser.explicitUnloadTabs([tab]);
+        if (!vista || !tarjeta.isConnected) return;
+        actualizar();
+        if (!tab.linkedPanel) marco.removeAttribute("con-miniatura");
+        for (const [t, c] of tarjetas) c.toggleAttribute("seleccionada", t.selected);
+      });
+      const cerrar = document.createElementNS(HTML, "button");
       cerrar.className = "bookos-cerrar";
       cerrar.title = t("Cerrar pestaña", "Close tab");
+      cerrar.setAttribute("aria-label", cerrar.title);
       cerrar.addEventListener("click", ev => {
         ev.stopPropagation();
         gBrowser.removeTab(tab, { animate: false });
@@ -303,15 +363,16 @@
         tarjetas.delete(tab);
         for (const [t, c] of tarjetas) c.toggleAttribute("seleccionada", t.selected);
       });
-      tarjeta.append(marco, pie, cerrar);
-      tarjeta.addEventListener("click", () => {
+      tarjeta.append(seleccionar, descargar, cerrar);
+      seleccionar.addEventListener("click", () => {
         gBrowser.selectedTab = tab;
         cerrarVista();
       });
       rejilla.append(tarjeta);
       tarjetas.set(tab, tarjeta);
     }
-    rejilla.querySelector("[seleccionada]")?.focus();
+    rejilla.querySelector("[seleccionada] .bookos-seleccionar")?.focus();
+    return miniaturas;
   }
 
   window.bookosVistaPestanas = () => {
@@ -332,11 +393,26 @@
       if (ev.target === vista || ev.target === rejilla) cerrarVista();
     });
     document.documentElement.append(vista);
-    pintarVista();
+    const miniaturas = pintarVista();
     window.addEventListener("keydown", teclaVista, true);
     // Un fotograma después, para que el fundido de entrada tenga de dónde
     // partir.
-    requestAnimationFrame(() => vista?.toggleAttribute("abierta", true));
+    const v = vista;
+    requestAnimationFrame(async () => {
+      if (vista !== v) return;
+      v.toggleAttribute("abierta", true);
+      // drawSnapshot fuerza el pintado de cada página. Pedir todas juntas
+      // competía con el zoom; se empieza al terminar y se reparte la carga
+      // entre fotogramas para que los botones sigan respondiendo.
+      await Promise.allSettled(v.getAnimations({ subtree: true }).map(a => a.finished));
+      for (const { tab, lienzo, marco } of miniaturas) {
+        await new Promise(requestAnimationFrame);
+        if (vista !== v) return;
+        if (!marco.isConnected) continue;
+        const ok = await miniatura(tab, lienzo);
+        marco.toggleAttribute("con-miniatura", ok && !!tab.linkedPanel);
+      }
+    });
   };
 
   // ── Página de inicio ──────────────────────────────────────────────────────
@@ -574,6 +650,10 @@
     QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
   });
   gBrowser.tabContainer.addEventListener("TabSelect", marcarNueva);
+  // Firefox enfoca la barra antes de emitir TabSelect; centrarla aquí evita
+  // que el cursor aparezca primero en la posición de navegación.
+  gURLBar.addEventListener("beforefocus", marcarNueva);
+  gURLBar.addEventListener("beforeselect", marcarNueva);
   // «busy» llega después del cambio de pestaña y no trae onLocationChange.
   gBrowser.tabContainer.addEventListener("TabAttrModified", ev => {
     if (ev.target.selected && ev.detail.changed.includes("busy")) marcarNueva();
