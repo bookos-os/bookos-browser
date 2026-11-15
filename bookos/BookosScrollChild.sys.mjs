@@ -13,8 +13,9 @@
 
 // Píxeles que hay que recorrer en un sentido antes de cambiar de estado. Sin
 // este margen, el rebote de inercia del touchpad al parar (unos pocos px
-// hacia atrás) volvía a sacar la barra.
-const UMBRAL = 24;
+// hacia atrás) volvía a sacar la barra. Con 24 se iba al primer roce de
+// la rueda, antes de que se viera intención de leer hacia abajo.
+const UMBRAL = 64;
 // Arriba del todo la barra se ve siempre.
 const ARRIBA = 8;
 // No se oculta hasta haber bajado más que la franja (58px): al irse, la
@@ -95,6 +96,10 @@ export class BookosScrollChild extends JSWindowActorChild {
       // la página se quede donde estaba.
       const cambio = win.innerHeight - this.#alto;
       this.#alto = win.innerHeight;
+      // La franja se reserva 200 ms después de que la barra entre (ver
+      // bookos.css): si entretanto se ha llegado arriba, compensar bajaría la
+      // página 58px y cortaría el gesto de recargar que se está haciendo.
+      if (cambio && this.#compensar && this.#posicion() <= ARRIBA) this.#compensar = false;
       if (cambio && this.#compensar) {
         this.#compensar = false;
         (this.#objetivo ?? win).scrollBy({ top: -cambio, behavior: "instant" });
@@ -110,6 +115,10 @@ export class BookosScrollChild extends JSWindowActorChild {
     const t = ev.target;
     const esDocumento = t === win.document;
     if (!esDocumento && !(t.clientHeight > win.innerHeight * 0.6)) return;
+    // Un carrusel alto que solo se desplaza en horizontal pasaba el filtro
+    // de arriba: se tomaba como lo que se desplaza, su scrollTop 0 se leía
+    // como «arriba del todo» y la barra volvía a salir.
+    if (!esDocumento && t.scrollHeight <= t.clientHeight + 1) return;
     const objetivo = esDocumento ? null : t;
     if (objetivo !== this.#objetivo) {
       // Las posiciones de dos elementos distintos no se pueden restar.

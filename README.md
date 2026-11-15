@@ -44,3 +44,14 @@ BOOKOS_BROWSER_DIR=~/.local/lib/bookos-browser ./bookos-browser
 
 `BOOKOS_CAPTURA=/ruta.png` guarda una captura de la ventana a los 3 s
 (`bookos/captura.uc.js`); spectacle no captura bajo el compositor de BookOS.
+
+Al estar al principio de una web, arrastrar hacia abajo con el touchpad o la
+pantalla táctil muestra «Suelta para recargar». Soltar confirma; retroceder o
+pulsar Escape cancela. El indicador usa la paleta de BookOS y respeta los
+efectos reducidos.
+
+Las pruebas del gesto se ejecutan sin dependencias adicionales:
+
+```sh
+node --test --test-isolation=none tests/recarga.test.mjs
+```

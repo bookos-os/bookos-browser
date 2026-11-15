@@ -718,6 +718,280 @@
   gBrowser.tabContainer.addEventListener("TabSelect", bookosAplicarBarra);
   bookosAplicarBarra();
 
+
+  // Firefox 158 crea una vista dividida con Alt+clic en una pestaña. Alt sigue
+  // pulsado al volver con Alt+Tab y la ventana se partía sin pedirlo. Con Alt
+  // la pestaña solo se selecciona; dividir queda en el menú contextual.
+  gBrowser.tabContainer.addEventListener("click", ev => {
+    if (ev.button !== 0 || !ev.altKey) return;
+    const pestaña = ev.target.closest?.("tab.tabbrowser-tab");
+    if (!pestaña || ev.target.closest(".tab-close-button")) return;
+    ev.stopPropagation();
+    gBrowser.selectedTab = pestaña;
+  }, true);
+
+  // ── Aviso de zoom con la barra oculta ────────────────────────────────────
+  // Con la barra oculta, Ctrl+/Ctrl- no dejaban ver el porcentaje ni cómo
+  // restablecerlo. Hacer asomar la barra entera era un parpadeo de toda la
+  // fila; basta una cápsula arriba de la página con el valor y los controles.
+  // Se queda mientras el puntero está encima.
+  {
+    const valor = el("span", { class: "bookos-zoom-valor" });
+    const boton = (accion, etiqueta, contenido) => {
+      const b = el("button", { class: "bookos-zoom-boton", "data-accion": accion, "aria-label": etiqueta }, contenido);
+      b.addEventListener("click", () => {
+        if (accion === "reducir") FullZoom.reduce();
+        else if (accion === "ampliar") FullZoom.enlarge();
+        else FullZoom.reset();
+      });
+      return b;
+    };
+    const icono = () => document.createXULElement("image");
+    const restablecer = boton("restablecer", t("Restablecer zoom", "Reset zoom"), t("Restablecer", "Reset"));
+    const aviso = el("div", { id: "bookos-zoom", hidden: "", role: "status" },
+      boton("reducir", t("Reducir", "Zoom out"), icono()), valor,
+      boton("ampliar", t("Ampliar", "Zoom in"), icono()), restablecer);
+    document.getElementById("browser").append(aviso);
+    let espera = 0;
+    const retirar = () => {
+      if (aviso.matches(":hover")) {
+        espera = setTimeout(retirar, 800);
+        return;
+      }
+      aviso.removeAttribute("data-visible");
+    };
+    aviso.addEventListener("transitionend", ev => {
+      if (ev.propertyName === "opacity" && !aviso.hasAttribute("data-visible")) aviso.hidden = true;
+    });
+    window.addEventListener("FullZoomChange", () => {
+      if (raiz.getAttribute("bookos-barra") !== "oculta") return;
+      const caja = gBrowser.selectedBrowser.getBoundingClientRect();
+      aviso.style.left = `${caja.left + caja.width / 2}px`;
+      aviso.style.top = `${caja.top + 12}px`;
+      const zoom = Math.round(ZoomManager.zoom * 100);
+      valor.textContent = `${zoom} %`;
+      restablecer.disabled = zoom === 100;
+      if (aviso.hidden) {
+        aviso.hidden = false;
+        // Un fotograma oculto antes de entrar: si no, la transición no parte
+        // del estado de fuera y aparece de golpe.
+        aviso.getBoundingClientRect();
+      }
+      aviso.setAttribute("data-visible", "");
+      clearTimeout(espera);
+      espera = setTimeout(retirar, 2500);
+    });
+    gBrowser.tabContainer.addEventListener("TabSelect", () => {
+      clearTimeout(espera);
+      aviso.removeAttribute("data-visible");
+    });
+  }
+
+  // ── Arrastrar desde el borde superior para recargar ──────────────────────
+  {
+    const texto = el("span", { class: "bookos-recarga-texto" });
+    const icono = document.createXULElement("image");
+    icono.classList.add("bookos-recarga-icono");
+    const indicador = el("div", { class: "bookos-recarga-indicador" },
+      el("span", { class: "bookos-recarga-simbolo", "aria-hidden": "true" }, icono), texto);
+    const capa = el("div", { id: "bookos-recarga", hidden: "", role: "status", "aria-live": "polite" }, indicador);
+    document.getElementById("browser").append(capa);
+    const reducido = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let actor = null;
+    let estado = "reposo";
+    let posicion = -56;
+    let velocidad = 0;
+    let destino = -56;
+    let agarre = -56;
+    let fotograma = 0;
+    let ultimo = 0;
+    let comprobacion = 0;
+    let bloqueadoHasta = 0;
+    // Forma: 0 es la bolita (solo el icono), 1 la cápsula con el texto.
+    let forma = 0;
+    let vForma = 0;
+    let formaDestino = 0;
+    let fotogramaForma = 0;
+    let ultimoForma = 0;
+
+    const pintar = () => {
+      capa.style.setProperty("--recarga-y", `${reducido.matches ? 12 : posicion}px`);
+      capa.style.setProperty("--recarga-alfa", Math.max(0, Math.min(1, (posicion + 56) / 56)));
+    };
+    const pintarForma = () => {
+      capa.style.setProperty("--recarga-forma", forma);
+      // Conserva el «volumen»: al ensancharse deprisa se aplana un poco y al
+      // recogerse se estira, que es lo que hace que parezca líquido.
+      const estiramiento = Math.max(-0.08, Math.min(0.08, vForma * 0.03));
+      capa.style.setProperty("--recarga-sx", 1 + estiramiento * 0.4);
+      capa.style.setProperty("--recarga-sy", 1 - estiramiento);
+    };
+    const animarForma = ahora => {
+      // Muelle subamortiguado (ζ 0,5, periodo 0,6 s): rebasa un poco la
+      // cápsula y vuelve, como una gota que se asienta. Pasos de 4 ms porque
+      // Euler semiimplícito con fotogramas de 32 ms se vuelve inestable.
+      let dt = Math.min((ahora - ultimoForma) / 1000, 0.032);
+      ultimoForma = ahora;
+      const w = 2 * Math.PI / 0.6;
+      for (; dt > 0; dt -= 0.004) {
+        const h = Math.min(dt, 0.004);
+        vForma += (-w * w * (forma - formaDestino) - 2 * 0.5 * w * vForma) * h;
+        forma += vForma * h;
+      }
+      const terminado = Math.abs(forma - formaDestino) < 0.002 && Math.abs(vForma) < 0.01;
+      if (terminado) {
+        forma = formaDestino;
+        vForma = 0;
+      }
+      pintarForma();
+      fotogramaForma = terminado ? 0 : requestAnimationFrame(animarForma);
+    };
+    const moldear = f => {
+      formaDestino = f;
+      if (reducido.matches) {
+        cancelAnimationFrame(fotogramaForma);
+        fotogramaForma = 0;
+        forma = f;
+        vForma = 0;
+        pintarForma();
+      } else if (!fotogramaForma) {
+        ultimoForma = performance.now();
+        fotogramaForma = requestAnimationFrame(animarForma);
+      }
+    };
+    const animar = ahora => {
+      // Muelle crítico de respuesta 0,36 s (antes M_RAPIDO, 0,21 s: se pedía
+      // más pausado). La solución analítica conserva posición y velocidad
+      // al interrumpir el retorno.
+      const dt = Math.min((ahora - ultimo) / 1000, 0.032);
+      ultimo = ahora;
+      const w = 2 * Math.PI / 0.36;
+      const d = posicion - destino;
+      const a = velocidad + w * d;
+      const e = Math.exp(-w * dt);
+      posicion = destino + (d + a * dt) * e;
+      velocidad = (velocidad - w * a * dt) * e;
+      const terminado = Math.abs(posicion - destino) < 0.1 && Math.abs(velocidad) < 0.5;
+      if (terminado) posicion = destino;
+      pintar();
+      fotograma = terminado ? 0 : requestAnimationFrame(animar);
+      if (terminado && estado === "volviendo") {
+        capa.hidden = true;
+        estado = "reposo";
+        cancelAnimationFrame(fotogramaForma);
+        fotogramaForma = 0;
+        forma = formaDestino = vForma = 0;
+        pintarForma();
+      }
+    };
+    const llevar = y => {
+      destino = y;
+      if (reducido.matches) {
+        cancelAnimationFrame(fotograma);
+        fotograma = 0;
+        posicion = destino;
+        pintar();
+        if (estado === "volviendo") {
+          capa.hidden = true;
+          estado = "reposo";
+          forma = formaDestino = vForma = 0;
+          pintarForma();
+        }
+      } else if (!fotograma) {
+        ultimo = performance.now();
+        fotograma = requestAnimationFrame(animar);
+      }
+    };
+    const ocultar = () => {
+      clearTimeout(comprobacion);
+      actor = null;
+      if (estado === "reposo") return;
+      estado = "volviendo";
+      capa.dataset.estado = estado;
+      capa.setAttribute("aria-hidden", "true");
+      moldear(0);
+      llevar(-56);
+    };
+    const cancelar = () => {
+      if (actor?.manager && !actor.manager.isClosed) actor.sendAsyncMessage("cancelar");
+      ocultar();
+    };
+    reducido.addEventListener("change", () => {
+      pintar();
+      if (fotograma) llevar(destino);
+    });
+    window.bookosRecarga = {
+      actualizar(origen, { progreso, recorrido, alto }) {
+        if (estado === "cargando" || performance.now() < bloqueadoHasta) return;
+        if (actor !== origen) {
+          actor = origen;
+          agarre = posicion;
+        }
+        const browser = gBrowser.selectedBrowser;
+        const caja = browser.getBoundingClientRect();
+        capa.style.left = `${caja.left}px`;
+        capa.style.top = `${caja.bottom - alto * browser.fullZoom}px`;
+        capa.style.width = `${caja.width}px`;
+        capa.hidden = false;
+        capa.removeAttribute("aria-hidden");
+        const siguiente = progreso >= 1 ? "preparado" : "arrastrando";
+        // Solo la cápsula lleva texto: al deshacer, mientras se recoge, debe
+        // seguir diciendo lo que habría pasado, no cambiar a otro mensaje.
+        if (siguiente === "preparado") texto.textContent = t("Suelta para recargar", "Release to reload");
+        estado = siguiente;
+        capa.dataset.estado = estado;
+        capa.style.setProperty("--recarga-progreso", progreso);
+        capa.style.setProperty("--recarga-giro", `${progreso * 270}deg`);
+        // La cápsula es la señal de «al soltar, recarga»: solo existe pasado
+        // el umbral. Si se retrocede, vuelve a bolita y soltar no hace nada;
+        // un estiramiento gradual dejaba la duda de si ya estaba armado.
+        moldear(estado === "preparado" ? 1 : 0);
+        // El muelle sigue al dedo en vez de saltar a cada mensaje: los
+        // mensajes del hijo llegan a saltos (IPC) y el indicador tartamudeaba.
+        llevar(Math.min(24, agarre + recorrido));
+      },
+      soltar(origen, confirmar) {
+        if (actor !== origen || !["arrastrando", "preparado"].includes(estado)) return;
+        if (!confirmar || estado !== "preparado") {
+          ocultar();
+          return;
+        }
+        estado = "cargando";
+        // La recarga destruye el actor de la página: la protección contra
+        // su cola de inercia debe sobrevivir también en la ventana.
+        bloqueadoHasta = performance.now() + 800;
+        capa.dataset.estado = estado;
+        texto.textContent = t("Recargando…", "Reloading…");
+        // Se recoge otra vez en bolita: mientras carga solo importa el giro.
+        moldear(0);
+        llevar(12);
+        BrowserCommands.reload();
+        // Si beforeunload cancela la navegación, no habrá un STATE_STOP de
+        // una carga nueva que quite el indicador.
+        comprobacion = setTimeout(() => {
+          if (estado === "cargando" && !gBrowser.selectedBrowser.webProgress.isLoadingDocument) ocultar();
+        }, 1000);
+      },
+      cancelar(origen) {
+        if (actor === origen && estado !== "cargando") ocultar();
+      },
+    };
+    gBrowser.addProgressListener({
+      onStateChange(webProgress, _peticion, flags) {
+        if (webProgress.isTopLevel && flags & Ci.nsIWebProgressListener.STATE_STOP &&
+            flags & Ci.nsIWebProgressListener.STATE_IS_NETWORK && estado === "cargando") ocultar();
+      },
+      onLocationChange() {
+        if (estado !== "cargando") ocultar();
+      },
+      QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
+    });
+    gBrowser.tabContainer.addEventListener("TabSelect", cancelar);
+    window.addEventListener("blur", cancelar);
+    window.addEventListener("resize", cancelar);
+    window.addEventListener("keydown", ev => { if (ev.key === "Escape") cancelar(); });
+  }
+
   // ── Paleta dinámica de BookOS Settings ────────────────────────────────────
   // Misma idea que bookos-palette.js en las apps Tauri: la hoja de Settings
   // se añade después de bookos.css, con los mismos selectores, y gana por

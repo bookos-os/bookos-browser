@@ -572,13 +572,31 @@
  * la web no se mueve. Lo único que se ve moverse es la barra. */
 :root:not([bookos-barra="oculta"], [bookos-nueva], [inFullscreen]) #tabbrowser-tabpanels {
   margin-top: var(--alto-barra);
+  /* Al aparecer, la franja se reserva cuando la barra (opaca, encima) ya
+   * está casi entera: el salto queda tapado. Antes se reservaba al
+   * instante y era una banda vacía que surgía de golpe: el «pop». Al
+   * ocultarse va al revés, sin espera: la web ocupa el hueco ya y la barra
+   * se desvanece encima de ella. */
+  /* 200 ms: con la barra ya casi opaca. Con 600 tapaba el menú fijo de la
+   * web (bookos.es) más de medio segundo. */
+  transition: margin-top 0s linear 200ms;
 }
+/* El fondo de la franja lo lleva la propia barra, para que entre y salga
+ * con ella en vez de aparecer de golpe. En la pestaña nueva flota sobre el
+ * fondo y sigue transparente. */
+:root:not([bookos-nueva], [inFullscreen]) #nav-bar { background: var(--bg) !important; }
 /* #urlbar aparte: es un popover y se pinta en la capa superior, así que no
  * hereda la opacidad ni el desplazamiento de #nav-bar. */
+/* Entrar y salir no son simétricos: al volver llega con un muelle que se
+ * asienta (orienta: «ya está aquí»); al irse acelera y no rebota, para no
+ * llamar la atención sobre algo que desaparece. */
 #nav-bar, #urlbar {
+  transform-origin: 50% 0;
+  /* El mismo muelle que el indicador de recarga, muestreado en linear():
+   * ζ 0,72 y periodo 0,5 s; rebasa un 4 % y se asienta. */
   transition:
-    transform 280ms cubic-bezier(.25,.46,.45,.94),
-    opacity 220ms cubic-bezier(.25,.46,.45,.94);
+    transform 600ms linear(0, 0.042, 0.145, 0.277, 0.418, 0.554, 0.675, 0.778, 0.861, 0.925, 0.971, 1.003, 1.023, 1.034, 1.038, 1.038, 1.035, 1.03, 1.025, 1.019, 1.014, 1.01, 1.007, 1.004, 1),
+    opacity 360ms cubic-bezier(0,0,.2,1);
 }
 /* Se va hacia arriba a la vez que se desvanece, por detrás de las pestañas:
  * orienta sobre adónde ha ido y por dónde volverá.
@@ -587,14 +605,23 @@
  * escondida; al tener el foco, :focus-within la vuelve a mostrar. */
 :root[bookos-barra="oculta"] #nav-bar:not(:focus-within),
 :root[bookos-barra="oculta"] #nav-bar:not(:focus-within) #urlbar {
-  transform: translateY(-16px);
+  transform: translateY(-20px) scale(.96);
   opacity: 0;
+  transition:
+    transform 420ms cubic-bezier(.4,0,.6,1),
+    opacity 380ms cubic-bezier(.4,0,.6,1);
+}
+/* Los botones que Firefox añade a la barra al cargar (traducir, lector)
+ * aparecían de golpe y empujaban a los demás. */
+#page-action-buttons > :not([hidden]) {
+  animation: bookos-aparece 220ms cubic-bezier(.2,1.25,.4,1);
 }
 :root[bookos-barra="oculta"] #nav-bar:not(:focus-within) * {
   pointer-events: none !important;
 }
 @media (prefers-reduced-motion: reduce) {
-  #nav-bar, #urlbar { transition: none !important; }
+  #nav-bar, #urlbar, #tabbrowser-tabpanels { transition: none !important; }
+  #page-action-buttons > * { animation: none !important; }
 }
 
 /* ── Fila del título: enfoque, extensiones y menú ───────────────────────── */
@@ -1110,6 +1137,16 @@ toolbarseparator { border-color: var(--div) !important; }
   --swipe-nav-icon-primary-color: var(--blue) !important;
   --swipe-nav-icon-accent-color: var(--card) !important;
 }
+/* Firefox coloca el círculo y su radio a saltos, uno por evento del
+ * touchpad. Con una transición corta cada salto se vuelve un tramo que sigue
+ * al dedo, como el indicador de recarga; al reorientarse a mitad del tramo
+ * parte de donde está, sin escalón. El radio (atributo r) no admite
+ * transición y sigue a saltos, pero son de 3px. Al soltar, Firefox pone su propia
+ * transición en línea y esta deja de aplicar. */
+#historySwipeAnimationPreviousArrow,
+#historySwipeAnimationNextArrow {
+  transition: translate 180ms cubic-bezier(.2,.8,.3,1);
+}
 .swipe-nav-icon {
   overflow: visible;
   filter: drop-shadow(0 4px 12px rgba(0,0,0,.2));
@@ -1140,4 +1177,160 @@ toolbarseparator { border-color: var(--div) !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   .swipe-nav-icon.will-navigate { animation: none; }
+  #historySwipeAnimationPreviousArrow, #historySwipeAnimationNextArrow { transition: none; }
+}
+
+/* La capa pertenece a la interfaz: las webs no pueden cubrir el indicador
+ * ni verlo en su DOM. Se recorta al borde de su viewport, bajo la barra. */
+#bookos-recarga {
+  position: fixed;
+  height: 128px;
+  overflow: hidden;
+  z-index: 8;
+  pointer-events: none;
+}
+#bookos-recarga[hidden] { display: none; }
+.bookos-recarga-indicador {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  /* De bolita (44px, solo el icono) a cápsula de ancho fijo según
+   * --recarga-forma; el ancho final es estable aunque el mensaje cambie. */
+  gap: calc(8px * max(0, var(--recarga-forma, 0)));
+  width: calc(44px + 180px * max(0, var(--recarga-forma, 0)));
+  max-width: calc(100% - 32px);
+  height: 44px;
+  box-sizing: border-box;
+  padding: 8px calc(8px + 8px * max(0, var(--recarga-forma, 0))) 8px 8px;
+  border-radius: 22px;
+  overflow: hidden;
+  background: var(--card);
+  color: var(--tx);
+  box-shadow: var(--sombra-flotante);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: var(--recarga-alfa, 0);
+  /* Emerge como una gota: crece al asomar y se deforma con la velocidad del
+   * cambio de forma (bookos.uc.js). */
+  transform: translate(-50%, var(--recarga-y, -56px))
+    scale(calc((.3 + .7 * var(--recarga-alfa, 0)) * var(--recarga-sx, 1)),
+          calc((.3 + .7 * var(--recarga-alfa, 0)) * var(--recarga-sy, 1)));
+}
+.bookos-recarga-simbolo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 28px;
+  color: var(--blue);
+}
+.bookos-recarga-simbolo::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent-container);
+  opacity: var(--recarga-progreso, 0);
+  transform: scale(calc(.72 + var(--recarga-progreso, 0) * .28));
+}
+.bookos-recarga-icono {
+  /* Sin el transform de la animación, el halo se pintaba sobre el glifo. */
+  position: relative;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  list-style-image: url("iconos/arrow-path.svg");
+  -moz-context-properties: fill;
+  fill: currentColor;
+  transform: rotate(var(--recarga-giro, 0deg));
+}
+.bookos-recarga-texto {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Aparece cuando ya hay sitio: con la bolita a medio abrir solo se veían
+   * letras cortadas. */
+  opacity: clamp(0, (var(--recarga-forma, 0) - .6) * 2.5, 1);
+}
+#bookos-recarga[data-estado="preparado"] .bookos-recarga-simbolo,
+#bookos-recarga[data-estado="cargando"] .bookos-recarga-simbolo { color: var(--on-accent-container); }
+#bookos-recarga[data-estado="cargando"] .bookos-recarga-icono {
+  animation: bookos-recarga-gira 750ms linear infinite;
+}
+@keyframes bookos-recarga-gira {
+  from { transform: rotate(var(--recarga-giro)); }
+  to { transform: rotate(calc(var(--recarga-giro) + 360deg)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bookos-recarga-icono { transform: none; }
+  .bookos-recarga-indicador { transform: translate(-50%, var(--recarga-y, -56px)); }
+  #bookos-recarga[data-estado="cargando"] .bookos-recarga-icono { animation: none; }
+}
+
+/* ── Aviso de zoom con la barra oculta ──────────────────────────────────── */
+/* Misma cápsula que el indicador de recarga: misma altura, radio, fondo y
+ * sombra, y el mismo muelle de entrada que la barra. */
+#bookos-zoom {
+  position: fixed;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 22px;
+  background: var(--card);
+  color: var(--tx);
+  box-shadow: var(--sombra-flotante);
+  font-size: 12px;
+  font-weight: 500;
+  translate: -50% 0;
+  transform-origin: 50% 0;
+  transition:
+    transform 600ms linear(0, 0.042, 0.145, 0.277, 0.418, 0.554, 0.675, 0.778, 0.861, 0.925, 0.971, 1.003, 1.023, 1.034, 1.038, 1.038, 1.035, 1.03, 1.025, 1.019, 1.014, 1.01, 1.007, 1.004, 1),
+    opacity 300ms cubic-bezier(0,0,.2,1);
+}
+#bookos-zoom:not([data-visible]) {
+  transform: translateY(-16px) scale(.7);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 320ms cubic-bezier(.4,0,.6,1),
+    opacity 260ms cubic-bezier(.4,0,.6,1);
+}
+#bookos-zoom[hidden] { display: none; }
+.bookos-zoom-boton {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0 12px;
+  border: none;
+  border-radius: 18px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.bookos-zoom-boton:hover { background: var(--sbg); }
+.bookos-zoom-boton:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.bookos-zoom-boton > image {
+  width: 16px;
+  height: 16px;
+  -moz-context-properties: fill;
+  fill: currentColor;
+}
+.bookos-zoom-boton[data-accion="reducir"] { padding: 0; }
+.bookos-zoom-boton[data-accion="ampliar"] { padding: 0; }
+.bookos-zoom-boton[data-accion="reducir"] > image { list-style-image: url("iconos/minus.svg"); }
+.bookos-zoom-boton[data-accion="ampliar"] > image { list-style-image: url("iconos/plus.svg"); }
+.bookos-zoom-valor { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.bookos-zoom-boton[data-accion="restablecer"] { color: var(--blue); }
+.bookos-zoom-boton[data-accion="restablecer"][disabled] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  #bookos-zoom, #bookos-zoom:not([data-visible]) { transition: opacity 150ms linear; transform: none; }
 }
